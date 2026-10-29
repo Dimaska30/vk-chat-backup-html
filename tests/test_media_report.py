@@ -97,6 +97,8 @@ class MediaReportTests(unittest.TestCase):
             root = Path(temp)
             originals = root / "OriginalMessages"
             originals.mkdir()
+            (root / "MdFiles").mkdir()
+            (root / "MdFiles" / "1.md").write_text("Synthetic", encoding="utf-8")
             message = dict(conversation_message_id=1, date=1700000000, text="Synthetic",
                            attachments=[{"type": "photo"} for _ in range(121)])
             (originals / "1.json").write_text(json.dumps(message), encoding="utf-8")
@@ -108,3 +110,33 @@ class MediaReportTests(unittest.TestCase):
             self.assertLessEqual(path.read_text(encoding="utf-8").count("<article>"), 50)
             self.assertIn('href="page-2.html"', path.read_text(encoding="utf-8"))
             self.assertTrue(any("страница 3 из 3" in line for line in progress))
+
+
+    def test_unprocessed_messages_are_counted_without_problem_cards(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.fixture(root)
+            report = collect_report(root, 1)
+            self.assertEqual(report["entries"], [])
+            self.assertEqual(report["unprocessed_messages"], 45)
+            self.assertEqual(report["unprocessed_attachments"], 2)
+            logs = root / "Logs/run/events.jsonl"
+            logs.write_text(json.dumps(dict(timestamp="2026-10-29T10:00:00+00:00", peer_id=1,
+                event="message_started", cid=23, details={})), encoding="utf-8")
+            report = collect_report(root, 1)
+            self.assertEqual(len(report["entries"]), 2)
+            self.assertEqual(report["unprocessed_messages"], 44)
+            self.assertEqual(report["unprocessed_attachments"], 0)
+            self.assertEqual(len(report["entries"][0]["context"]), 41)
+
+    def test_existing_legacy_markdown_counts_as_processed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.fixture(root)
+            md = root / "MdFiles/subfolder"
+            md.mkdir(parents=True)
+            (md / "Legacy.Id23_part_1.md").write_text("Synthetic", encoding="utf-8")
+            report = collect_report(root, 1)
+            self.assertEqual(len(report["entries"]), 2)
+            self.assertEqual(report["entries"][0]["reasons"], ["unknown"])
+            self.assertEqual(report["unprocessed_messages"], 44)
