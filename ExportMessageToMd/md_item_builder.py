@@ -126,7 +126,42 @@ def _make_item(
     return item
 
 
-def _resolve_attachment(
+def _resolve_attachment(att, cid_raw_dir, cid_large_dir, md_dir, url_to_relpath, authors, config, logger):
+    attachment_type = att.get("type", "unknown")
+    logger.LogEvent("attachment_location", message_path=str(Path(cid_raw_dir).relative_to(Path(cid_raw_dir).parents[1])) if len(Path(cid_raw_dir).parents) > 1 else Path(cid_raw_dir).name)
+    logger.LogEvent("attachment_started", attachment_type=attachment_type)
+    try:
+        result = _resolve_attachment_impl(att, cid_raw_dir, cid_large_dir, md_dir,
+                                          url_to_relpath, authors, config, logger)
+    except Exception as exc:
+        logger.LogEvent("attachment_failed", attachment_type=attachment_type, exception_type=type(exc).__name__)
+        raise
+    downloads = {}
+    for field in ("download_result", "mp4_download_result", "preview_download_result", "photo_download_result"):
+        value = getattr(result, field, None)
+        if value is None:
+            continue
+        if isinstance(value, SuccessDownloadResult):
+            downloads[field] = "downloaded"
+        elif isinstance(value, ErrorDownloadResult):
+            downloads[field] = "error"
+        else:
+            downloads[field] = "no_url"
+    if isinstance(result, VideoAttachment) and not _should_download_video(result.duration, config):
+        downloads["mp4_download_result"] = "disabled_by_settings"
+    if type(result) is BaseAttachmentItem:
+        status = "unsupported"
+    elif isinstance(result, AudioAttachment):
+        status = "metadata_only"
+    elif "error" in downloads.values():
+        status = "error"
+    else:
+        status = "processed"
+    logger.LogEvent("attachment_finished", attachment_type=attachment_type, status=status, downloads=downloads)
+    return result
+
+
+def _resolve_attachment_impl(
     att: dict,
     cid_raw_dir: str,
     cid_large_dir: str,
