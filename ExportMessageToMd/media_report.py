@@ -29,7 +29,9 @@ def walk_wall(wall, path):
         yield from walk_wall(child, f"{path}copy_history[{index}].")
 
 
-def collect_report(dialog_dir, peer_id):
+def collect_report(dialog_dir, peer_id, progress=None):
+    progress = progress or (lambda message: None)
+    progress("Чтение исходных сообщений…")
     dialog_dir = Path(dialog_dir)
     messages, issues = [], []
     for file in sorted((dialog_dir / "OriginalMessages").glob("*.json")):
@@ -38,9 +40,12 @@ def collect_report(dialog_dir, peer_id):
             if not isinstance(item, dict) or not isinstance(item.get("conversation_message_id"), int):
                 raise ValueError("Invalid message")
             messages.append(item)
+            if len(messages) % 100 == 0:
+                progress(f"Прочитано сообщений: {len(messages)}")
         except (ValueError, OSError):
             issues.append("Не удалось прочитать исходное сообщение: " + file.name)
     messages.sort(key=lambda m: (m.get("date") or 0, m["conversation_message_id"]))
+    progress(f"Прочитано сообщений: {len(messages)}. Проверка журналов…")
     latest = {}
     for file in sorted((dialog_dir / "Logs").glob("*/events.jsonl")):
         try:
@@ -60,8 +65,11 @@ def collect_report(dialog_dir, peer_id):
                     latest[key] = (timestamp, record)
             except (ValueError, TypeError, KeyError, AttributeError):
                 issues.append(f"Пропущена повреждённая запись журнала {file.parent.name}:{line_number}")
+    progress("Сопоставление вложений…")
     entries, summary, reasons = [], Counter(), Counter()
     for position, root in enumerate(messages):
+        if position % 100 == 0:
+            progress(f"Проверено сообщений: {position} из {len(messages)}")
         for path, attachment, owner in walk_attachments(root):
             cid = root["conversation_message_id"]
             kind = attachment.get("type", "unknown")
@@ -152,12 +160,27 @@ def render_report(report):
             f"<h2>Причины</h2><ul>{reason_rows}</ul><ul>{warnings}</ul>" + ("".join(cards) if cards else "<p>По доступным данным проблемных вложений не найдено.</p>") + "</html>")
 
 
-def save_report(dialog_dir, peer_id):
+def save_report(dialog_dir, peer_id, progress=None):
     from uuid import uuid4
-    report = collect_report(dialog_dir, peer_id)
+    progress = progress or (lambda message: None)
+    report = collect_report(dialog_dir, peer_id, progress)
     directory = Path(dialog_dir) / "Reports" / (datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_" + uuid4().hex[:8])
     directory.mkdir(parents=True, exist_ok=False)
-    (directory / "missing-media.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    path = directory / "missing-media.html"
-    path.write_text(render_report(report), encoding="utf-8")
-    return path
+    progress("Сохранение JSON…")
+    with (directory / "missing-media.json").open("w", encoding="utf-8") as stream:
+        json.dump(report, stream, ensure_ascii=False)
+    problems = [entry for entry in report["entries"] if entry["reasons"]]
+    page_count = max(1, (len(problems) + 49) // 50)
+    for page in range(page_count):
+        progress(f"Сохранение HTML: страница {page + 1} из {page_count}")
+        name = "missing-media.html" if page == 0 else f"page-{page + 1}.html"
+        view = dict(report, entries=problems[page*50:(page+1)*50])
+        links = []
+        for target, label in ((page - 1, "Предыдущая"), (page + 1, "Следующая")):
+            if 0 <= target < page_count:
+                href = "missing-media.html" if target == 0 else f"page-{target + 1}.html"
+                links.append(f'<a href="{href}">{label}</a>')
+        navigation = f"<nav>Страница {page+1} из {page_count} · " + " · ".join(links) + "</nav>"
+        output = render_report(view).replace("</html>", navigation + "</html>")
+        (directory / name).write_text(output, encoding="utf-8")
+    return directory / "missing-media.html"

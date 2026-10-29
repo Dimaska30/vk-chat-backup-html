@@ -1022,6 +1022,36 @@ def create_media_report(peer_id):
     dialog_dir = _get_dialog_dir(peer_id)
     if not (dialog_dir / "OriginalMessages").is_dir():
         abort(404)
-    path = save_report(dialog_dir, peer_id)
-    relative = path.relative_to(export_serve_abs).as_posix()
-    return redirect(url_for("serve_export", filename=relative))
+    from queue import Queue, Empty
+    from threading import Thread
+    updates = Queue()
+
+    def work():
+        try:
+            path = save_report(dialog_dir, peer_id, lambda message: updates.put(("progress", message)))
+            updates.put(("done", path))
+        except Exception as exc:
+            app.logger.exception("Media report generation failed")
+            updates.put(("error", type(exc).__name__))
+
+    def generate():
+        yield "<!doctype html><html lang='ru'><meta charset='utf-8'><title>Формирование отчёта</title><h1>Формирование отчёта</h1><pre>" + " " * 4096
+        Thread(target=work, daemon=True).start()
+        while True:
+            try:
+                kind, value = updates.get(timeout=10)
+            except Empty:
+                yield "Обработка продолжается…\n"
+                continue
+            if kind == "progress":
+                yield html.escape(value) + "\n"
+            elif kind == "error":
+                yield "</pre><p>Не удалось сформировать отчёт: " + html.escape(value) + ". Подробности в консоли сервера.</p></html>"
+                return
+            else:
+                relative = value.relative_to(export_serve_abs).as_posix()
+                url = html.escape(url_for("serve_export", filename=relative), quote=True)
+                yield f'</pre><p><a href="{url}">Открыть отчёт</a></p><meta http-equiv="refresh" content="0;url={url}"></html>'
+                return
+
+    return Response(stream_with_context(generate()), mimetype="text/html", headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"})
