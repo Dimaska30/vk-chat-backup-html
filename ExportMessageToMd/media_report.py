@@ -100,3 +100,57 @@ def collect_report(dialog_dir, peer_id):
                 summary=[dict(attachment_type=k[0], state=k[1], count=v) for k, v in sorted(summary.items())],
                 entries=entries, issues=issues,
                 note="Состояние основано на последних событиях журналов. Фактическое наличие файлов на диске пока не проверяется. Нет события — результат неизвестен. Порядок вложений исходного JSON должен совпадать с порядком при генерации.")
+
+
+LABELS = {"downloaded": "Скачано по журналу", "processed": "Обработано без скачивания",
+          "needs_attention": "Требует внимания", "unknown": "Нет достоверных данных",
+          "interrupted": "Обработка прервана", "error": "Ошибка обработки или скачивания",
+          "no_url": "Нет доступной ссылки", "disabled_by_settings": "Отключено настройками",
+          "unsupported": "Тип не поддерживается", "metadata_only": "Сохранено только описание"}
+
+
+def render_report(report):
+    from html import escape
+    def e(value):
+        return escape(str(value if value is not None else "—"), quote=True)
+    def label(value):
+        return e(LABELS.get(value, value))
+    rows = []
+    for entry in report["summary"]:
+        rows.append(f"<tr><td>{e(entry['attachment_type'])}</td><td>{label(entry['state'])}</td><td>{entry['count']}</td></tr>")
+    cards = []
+    for entry in report["entries"]:
+        if not entry["reasons"]:
+            continue
+        context = []
+        for message in entry["context"]:
+            css = " class='target'" if message["target"] else ""
+            context.append(f"<li{css}><b>CID {message['cid']} · автор {e(message['from_id'])} · дата {e(message['date'])}</b><pre>{e(message['text'])}</pre></li>")
+        downloads = "; ".join(e(k) + ": " + label(v) for k, v in entry["downloads"].items())
+        cards.append(f"<article><h2>CID {entry['root_cid']} · {e(entry['attachment_type'])}</h2>"
+                     f"<p><code>{e(entry['item_path'])}</code></p><p>{', '.join(label(r) for r in entry['reasons'])}</p>"
+                     f"<p>Автор: {e(entry['from_id'])}; дата: {e(entry['date'])}; CID вложенного сообщения: {e(entry['message_cid'])}</p>"
+                     f"<p>{downloads}</p><pre>{e(entry.get('message_text', ''))}</pre>"
+                     f"<details><summary>Контекст: до 20 сообщений до и после</summary><ol>{''.join(context)}</ol></details></article>")
+    warnings = "".join("<li>" + e(issue) + "</li>" for issue in report["issues"])
+    return ("<!doctype html><html lang='ru'><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+            "<meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; style-src 'unsafe-inline'\">"
+            "<title>Отчёт о вложениях</title><style>body{font:16px system-ui;max-width:1050px;margin:30px auto;padding:16px;background:#f5f5f5}"
+            "article{background:white;padding:20px;margin:16px 0;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}"
+            "td,th{border:1px solid #ccc;padding:8px}.target{background:#fff0b5}li{padding:8px}code{overflow-wrap:anywhere}</style>"
+            f"<h1>Отчёт о вложениях · диалог {report['peer_id']}</h1><p>{e(report['generated_at'])}</p>"
+            f"<p>{e(report['note'])}</p><p>Отчёт содержит личную переписку. Не публикуйте его вместе с кодом.</p>"
+            f"<table><tr><th>Тип</th><th>Состояние</th><th>Количество</th></tr>{''.join(rows)}</table>"
+            f"<ul>{warnings}</ul>" + ("".join(cards) if cards else "<p>По доступным данным проблемных вложений не найдено.</p>") + "</html>")
+
+
+def save_report(dialog_dir, peer_id):
+    from uuid import uuid4
+    report = collect_report(dialog_dir, peer_id)
+    directory = Path(dialog_dir) / "Reports" / (datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + "_" + uuid4().hex[:8])
+    directory.mkdir(parents=True, exist_ok=False)
+    (directory / "missing-media.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    path = directory / "missing-media.html"
+    path.write_text(render_report(report), encoding="utf-8")
+    return path

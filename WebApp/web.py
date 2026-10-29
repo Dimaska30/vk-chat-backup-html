@@ -1014,3 +1014,14 @@ def serve_export(filename: str):
 @app.route("/large/<path:filename>")
 def serve_large(filename: str):
     return send_from_directory(str(large_root_abs), filename)
+
+
+@app.route("/dialog/<int:peer_id>/media-report", methods=["POST"])
+def create_media_report(peer_id):
+    from media_report import save_report
+    dialog_dir = _get_dialog_dir(peer_id)
+    if not (dialog_dir / "OriginalMessages").is_dir():
+        abort(404)
+    path = save_report(dialog_dir, peer_id)
+    relative = path.relative_to(export_serve_abs).as_posix()
+    return redirect(url_for("serve_export", filename=relative))
