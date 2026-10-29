@@ -15,6 +15,7 @@ from md_renderer import render_md_item
 from md_item_builder import build_md_items
 from author_resolver import load_authors, ensure_author_avatars
 from Loggers.base_logger import BaseLogger
+from Loggers.file_logger import FileLogger
 
 
 def _is_msg_filtered(item: dict, peer_id: int, config: Config) -> bool:
@@ -90,62 +91,74 @@ def main(config: Config, peer_ids: Optional[set[int]], logger: BaseLogger):
 
         dialog_dir.mkdir(parents=True, exist_ok=True)
 
-        yield "  Скачивание аватаров авторов..."
-        url_to_relpath: dict[str, str] = {}
-        ensure_author_avatars(authors, str(autor_images_dir), url_to_relpath, str(md_dir), logger)
-        yield "  Аватары авторов скачены."
-
-        filtered_items = [item for item in items if not _is_msg_filtered(item, peer_id, config)]
-        created, overwritten, skipped = extract_items_from_data(
-            filtered_items, str(original_messages_dir),
-            overwrite_existing_original_message_json=config.overwrite_existing_original_message_json,
-        )
-        yield f"  Сообщений: {created} создано, {overwritten} перезаписано, {skipped} пропущено"
-
-        count = 0
-        message_files = sorted(Path(original_messages_dir).glob("*.json"))
-
-        existing_md_by_cid: dict[int, list[Path]] = {}
-        if md_dir.is_dir():
-            for md_file in md_dir.rglob("*.md"):
-                m = re.search(r'(?:^|\.Id)(\d+)(?:_part_\d+)?\.md$', md_file.name)
-                if m:
-                    existing_md_by_cid.setdefault(int(m.group(1)), []).append(md_file)
-
-        for message_index, message_file in enumerate(message_files):
-            with open(message_file, encoding="utf-8") as fp:
-                item_data = json.load(fp)
-            if _is_msg_filtered(item_data, peer_id, config):
-                continue
-            cid = item_data.get("conversation_message_id")
-            if cid is None:
-                continue
-            is_overwrite = False
-            if cid in existing_md_by_cid:
-                if not config.overwrite_existing_md:
-                    yield f"  Уже существует ({message_index + 1}/{len(message_files)} id={cid}): \"{existing_md_by_cid[cid]}\""
-                    continue
-                for existing_file in existing_md_by_cid[cid]:
-                    existing_file.unlink(missing_ok=True)
-                is_overwrite = True
-            shutil.rmtree(little_raw_data_dir / str(cid), ignore_errors=True)
-            shutil.rmtree(large_raw_data_dir / str(cid), ignore_errors=True)
-            md_items = build_md_items(
-                item_data, cid, cid, message_file.name, str(md_dir),
-                str(little_raw_data_dir), str(large_raw_data_dir),
-                authors, config, url_to_relpath, logger,
+        with FileLogger(dialog_dir, peer_id, logger) as dialog_logger:
+            dialog_logger.LogEvent("settings", download_short_video=config.download_short_video, download_long_video=config.download_long_video, overwrite_existing_md=config.overwrite_existing_md)
+            yield "  Скачивание аватаров авторов..."
+            url_to_relpath: dict[str, str] = {}
+            ensure_author_avatars(authors, str(autor_images_dir), url_to_relpath, str(md_dir), dialog_logger)
+            yield "  Аватары авторов скачены."
+    
+            filtered_items = [item for item in items if not _is_msg_filtered(item, peer_id, config)]
+            created, overwritten, skipped = extract_items_from_data(
+                filtered_items, str(original_messages_dir),
+                overwrite_existing_original_message_json=config.overwrite_existing_original_message_json,
             )
-            for md_index, item in enumerate(md_items):
-                md_text = render_md_item(item)
-                file_path = md_dir / item.filename
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(file_path, "w", encoding="utf-8") as fp:
-                    fp.write(md_text)
-                action = "Перезаписан" if is_overwrite else "Создан"
-                yield f"  {action} {message_index + 1}/{len(message_files)} id={item.cid} (part {md_index + 1}/{len(md_items)}): \"{item.filename}\""
-                count += 1
-
-        yield f"  Создано MD-файлов: {count}"
+            yield f"  Сообщений: {created} создано, {overwritten} перезаписано, {skipped} пропущено"
+    
+            dialog_logger.LogEvent("originals_extracted", created=created, overwritten=overwritten, skipped=skipped)
+            count = 0
+            message_files = sorted(Path(original_messages_dir).glob("*.json"))
+    
+            existing_md_by_cid: dict[int, list[Path]] = {}
+            if md_dir.is_dir():
+                for md_file in md_dir.rglob("*.md"):
+                    m = re.search(r'(?:^|\.Id)(\d+)(?:_part_\d+)?\.md$', md_file.name)
+                    if m:
+                        existing_md_by_cid.setdefault(int(m.group(1)), []).append(md_file)
+    
+            for message_index, message_file in enumerate(message_files):
+                with open(message_file, encoding="utf-8") as fp:
+                    item_data = json.load(fp)
+                dialog_logger.context = {"cid": item_data.get("conversation_message_id"), "date": item_data.get("date")}
+                if _is_msg_filtered(item_data, peer_id, config):
+                    dialog_logger.LogEvent("message_filtered")
+                    continue
+                cid = item_data.get("conversation_message_id")
+                if cid is None:
+                    continue
+                dialog_logger.LogEvent("message_started")
+                yield f"  Сообщение CID={cid}: {item_data.get('text', '')}"
+                is_overwrite = False
+                if cid in existing_md_by_cid:
+                    if not config.overwrite_existing_md:
+                        dialog_logger.LogEvent("message_skipped", reason="existing_markdown")
+                        yield f"  Уже существует ({message_index + 1}/{len(message_files)} id={cid}): \"{existing_md_by_cid[cid]}\""
+                        continue
+                    for existing_file in existing_md_by_cid[cid]:
+                        existing_file.unlink(missing_ok=True)
+                    is_overwrite = True
+                shutil.rmtree(little_raw_data_dir / str(cid), ignore_errors=True)
+                shutil.rmtree(large_raw_data_dir / str(cid), ignore_errors=True)
+                md_items = build_md_items(
+                    item_data, cid, cid, message_file.name, str(md_dir),
+                    str(little_raw_data_dir), str(large_raw_data_dir),
+                    authors, config, url_to_relpath, dialog_logger,
+                )
+                for md_index, item in enumerate(md_items):
+                    md_text = render_md_item(item)
+                    file_path = md_dir / item.filename
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(file_path, "w", encoding="utf-8") as fp:
+                        fp.write(md_text)
+                    dialog_logger.LogEvent("markdown_written", part=md_index + 1, overwritten=is_overwrite)
+                    action = "Перезаписан" if is_overwrite else "Создан"
+                    yield f"  {action} {message_index + 1}/{len(message_files)} id={item.cid} (part {md_index + 1}/{len(md_items)}): \"{item.filename}\""
+                    count += 1
+    
+            dialog_logger.context = {}
+            dialog_logger.LogEvent("dialog_summary", markdown_files=count)
+            yield f"  Создано MD-файлов: {count}"
+            yield f"  Логи сохранены: {dialog_logger.directory}"
 
     yield f"\nГотово (Затраченое время = {datetime.now() - start_create_time})"
 
