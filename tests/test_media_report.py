@@ -38,10 +38,10 @@ class MediaReportTests(unittest.TestCase):
             self.assertEqual(photo["state"], "downloaded")
             self.assertEqual(photo["reasons"], [])
             self.assertEqual(reply["reasons"], ["unknown"])
-            self.assertEqual(len(reply["context"]), 41)
-            self.assertEqual([m["cid"] for m in reply["context"] if m["target"]], [23])
-            self.assertEqual(reply["context"][0]["cid"], 3)
-            self.assertEqual(reply["context"][-1]["cid"], 43)
+            self.assertEqual(len(report["groups"][0]["context"]), 41)
+            self.assertEqual([m["cid"] for m in report["groups"][0]["context"] if m["target"]], [23])
+            self.assertEqual(report["groups"][0]["context"][0]["cid"], 3)
+            self.assertEqual(report["groups"][0]["context"][-1]["cid"], 43)
             html = render_report(report)
             self.assertNotIn("<script>", html)
             self.assertIn("&lt;script&gt;", html)
@@ -105,11 +105,11 @@ class MediaReportTests(unittest.TestCase):
             progress = []
             path = save_report(root, 1, progress.append)
             pages = list(path.parent.glob("*.html"))
-            self.assertEqual(len(pages), 3)
-            self.assertEqual(sum(p.read_text(encoding="utf-8").count("<article>") for p in pages), 121)
+            self.assertEqual(len(pages), 1)
+            self.assertEqual(sum(p.read_text(encoding="utf-8").count("<article>") for p in pages), 1)
             self.assertLessEqual(path.read_text(encoding="utf-8").count("<article>"), 50)
-            self.assertIn('href="page-2.html"', path.read_text(encoding="utf-8"))
-            self.assertTrue(any("страница 3 из 3" in line for line in progress))
+            self.assertEqual(path.read_text(encoding="utf-8").count("<section>"), 121)
+            self.assertTrue(any("страница 1 из 1" in line for line in progress))
 
 
     def test_unprocessed_messages_are_counted_without_problem_cards(self):
@@ -127,7 +127,7 @@ class MediaReportTests(unittest.TestCase):
             self.assertEqual(len(report["entries"]), 2)
             self.assertEqual(report["unprocessed_messages"], 44)
             self.assertEqual(report["unprocessed_attachments"], 0)
-            self.assertEqual(len(report["entries"][0]["context"]), 41)
+            self.assertEqual(len(report["groups"][0]["context"]), 41)
 
     def test_existing_legacy_markdown_counts_as_processed(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -140,3 +140,36 @@ class MediaReportTests(unittest.TestCase):
             self.assertEqual(len(report["entries"]), 2)
             self.assertEqual(report["entries"][0]["reasons"], ["unknown"])
             self.assertEqual(report["unprocessed_messages"], 44)
+
+
+    def test_only_adjacent_messages_group_even_with_cid_gaps(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "OriginalMessages").mkdir()
+            (root / "MdFiles").mkdir()
+            for position, cid in enumerate([10, 90, 91, 200, 300]):
+                attachments = [{"type": "photo"}] * (2 if position == 0 else 1) if position != 2 else []
+                message = dict(conversation_message_id=cid, date=1700000000+position, text="Synthetic", attachments=attachments)
+                (root / "OriginalMessages" / f"{cid}.json").write_text(json.dumps(message), encoding="utf-8")
+                (root / "MdFiles" / f"{cid}.md").write_text("Synthetic", encoding="utf-8")
+            report = collect_report(root, 1)
+            self.assertEqual(report["problem_count"], 5)
+            self.assertEqual(report["group_count"], 2)
+            self.assertEqual([len(g["entry_indices"]) for g in report["groups"]], [3, 2])
+            self.assertEqual([m["cid"] for m in report["groups"][0]["context"] if m["target"]], [10, 90])
+            html = render_report(report)
+            self.assertEqual(html.count("<article>"), 2)
+            self.assertEqual(html.count("<details>"), 2)
+
+    def test_group_pagination_keeps_groups_intact(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "OriginalMessages").mkdir()
+            (root / "MdFiles").mkdir()
+            for i in range(103):
+                message = dict(conversation_message_id=i+1, date=1700000000+i, attachments=[{"type": "photo"}] if i % 2 == 0 else [])
+                (root / "OriginalMessages" / f"{i}.json").write_text(json.dumps(message), encoding="utf-8")
+                (root / "MdFiles" / f"{i+1}.md").write_text("Synthetic", encoding="utf-8")
+            path = save_report(root, 1)
+            self.assertEqual(path.read_text(encoding="utf-8").count("<article>"), 50)
+            self.assertEqual((path.parent / "page-2.html").read_text(encoding="utf-8").count("<article>"), 2)
