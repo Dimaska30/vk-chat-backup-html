@@ -117,13 +117,27 @@ def collect_report(dialog_dir, peer_id, progress=None):
             summary[(kind, entry["state"])] += 1
             if entry["reasons"]:
                 entry["message_text"] = owner.get("text", "")
-                entry["context"] = [dict(cid=m["conversation_message_id"], date=m.get("date"), from_id=m.get("from_id"), text=m.get("text", ""), target=i == position)
-                                    for i, m in enumerate(messages[max(0, position-20):position+21], max(0, position-20))]
             reasons.update(entry["reasons"])
             entries.append(entry)
+    positions = {m["conversation_message_id"]: i for i, m in enumerate(messages)}
+    groups = []
+    for index, entry in enumerate(entries):
+        if not entry["reasons"]:
+            continue
+        position = positions[entry["root_cid"]]
+        if not groups or position > groups[-1]["last_position"] + 1:
+            groups.append(dict(first_position=position, last_position=position, entry_indices=[]))
+        group = groups[-1]
+        group["last_position"] = position
+        group["entry_indices"].append(index)
+    for group in groups:
+        first, last = group["first_position"], group["last_position"]
+        group["context"] = [dict(cid=m["conversation_message_id"], date=m.get("date"), from_id=m.get("from_id"), text=m.get("text", ""), target=first <= i <= last)
+                            for i, m in enumerate(messages[max(0, first-20):last+21], max(0, first-20))]
+    problem_count = sum(bool(entry["reasons"]) for entry in entries)
     return dict(peer_id=peer_id, generated_at=datetime.now().astimezone().isoformat(),
                 summary=[dict(attachment_type=k[0], state=k[1], count=v) for k, v in sorted(summary.items())],
-                entries=entries, issues=issues, reason_summary=dict(reasons),
+                entries=entries, groups=groups, problem_count=problem_count, group_count=len(groups), issues=issues, reason_summary=dict(reasons),
                 unprocessed_messages=unprocessed_messages, unprocessed_attachments=unprocessed_attachments,
                 note="Состояние основано на последних событиях журналов. Фактическое наличие файлов на диске пока не проверяется. Нет события — результат неизвестен. Порядок вложений исходного JSON должен совпадать с порядком при генерации.")
 
@@ -151,19 +165,21 @@ def render_report(report):
         rows.append(f"<tr><td>{e(entry['attachment_type'])}</td><td>{label(entry['state'])}</td><td>{entry['count']}</td></tr>")
     reason_rows = "".join(f"<li>{label(reason)}: {count}</li>" for reason, count in report.get("reason_summary", {}).items())
     cards = []
-    for entry in report["entries"]:
-        if not entry["reasons"]:
-            continue
+    for group in report["groups"]:
         context = []
-        for message in entry["context"]:
+        for message in group["context"]:
             css = " class='target'" if message["target"] else ""
             context.append(f"<li{css}><b>CID {message['cid']} · автор {e(message['from_id'])} · дата {date_label(message['date'])}</b><pre>{e(message['text'])}</pre></li>")
-        downloads = "; ".join(e(k) + ": " + label(v) for k, v in entry["downloads"].items())
-        cards.append(f"<article><h2>CID {entry['root_cid']} · {e(entry['attachment_type'])}</h2>"
-                     f"<p><code>{e(entry['item_path'])}</code></p><p>{', '.join(label(r) for r in entry['reasons'])}</p>"
-                     f"<p>Автор: {e(entry['from_id'])}; дата: {date_label(entry['date'])}; CID вложенного сообщения: {e(entry['message_cid'])}</p>"
-                     f"<p>{downloads}</p><pre>{e(entry.get('message_text', ''))}</pre>"
-                     f"<details><summary>Контекст: до 20 сообщений до и после</summary><ol>{''.join(context)}</ol></details></article>")
+        attachments = []
+        for index in group["entry_indices"]:
+            entry = report["entries"][index]
+            downloads = "; ".join(e(k) + ": " + label(v) for k, v in entry["downloads"].items())
+            attachments.append(f"<section><h3>CID {entry['root_cid']} · {e(entry['attachment_type'])}</h3>"
+                               f"<p><code>{e(entry['item_path'])}</code></p><p>{', '.join(label(r) for r in entry['reasons'])}</p>"
+                               f"<p>Автор: {e(entry['from_id'])}; дата: {date_label(entry['date'])}; CID вложенного сообщения: {e(entry['message_cid'])}</p>"
+                               f"<p>{downloads}</p><pre>{e(entry.get('message_text', ''))}</pre></section>")
+        cards.append(f"<article><h2>Группа: {len(group['entry_indices'])} проблемных вложений</h2>{''.join(attachments)}"
+                     f"<details><summary>Общий контекст: до 20 сообщений до и после группы</summary><ol>{''.join(context)}</ol></details></article>")
     warnings = "".join("<li>" + e(issue) + "</li>" for issue in report["issues"])
     return ("<!doctype html><html lang='ru'><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width, initial-scale=1'>"
@@ -175,6 +191,7 @@ def render_report(report):
             f"<p>Ещё не обрабатывались: сообщений {report.get('unprocessed_messages', 0)}, вложений {report.get('unprocessed_attachments', 0)}. Они не включены в карточки проблем.</p>"
             f"<p>{e(report['note'])}</p><p>Отчёт содержит личную переписку. Не публикуйте его вместе с кодом.</p>"
             f"<table><tr><th>Тип</th><th>Состояние</th><th>Количество</th></tr>{''.join(rows)}</table>"
+            f"<p>Проблемных вложений: {report['problem_count']}; групп: {report['group_count']}.</p>"
             f"<h2>Причины</h2><ul>{reason_rows}</ul><ul>{warnings}</ul>" + ("".join(cards) if cards else "<p>По доступным данным проблемных вложений не найдено.</p>") + "</html>")
 
 
@@ -187,12 +204,12 @@ def save_report(dialog_dir, peer_id, progress=None):
     progress("Сохранение JSON…")
     with (directory / "missing-media.json").open("w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False)
-    problems = [entry for entry in report["entries"] if entry["reasons"]]
+    problems = report["groups"]
     page_count = max(1, (len(problems) + 49) // 50)
     for page in range(page_count):
         progress(f"Сохранение HTML: страница {page + 1} из {page_count}")
         name = "missing-media.html" if page == 0 else f"page-{page + 1}.html"
-        view = dict(report, entries=problems[page*50:(page+1)*50])
+        view = dict(report, groups=problems[page*50:(page+1)*50])
         links = []
         for target, label in ((page - 1, "Предыдущая"), (page + 1, "Следующая")):
             if 0 <= target < page_count:
