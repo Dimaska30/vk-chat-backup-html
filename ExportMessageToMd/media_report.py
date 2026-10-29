@@ -60,7 +60,7 @@ def collect_report(dialog_dir, peer_id):
                     latest[key] = (timestamp, record)
             except (ValueError, TypeError, KeyError, AttributeError):
                 issues.append(f"Пропущена повреждённая запись журнала {file.parent.name}:{line_number}")
-    entries, summary = [], Counter()
+    entries, summary, reasons = [], Counter(), Counter()
     for position, root in enumerate(messages):
         for path, attachment, owner in walk_attachments(root):
             cid = root["conversation_message_id"]
@@ -95,10 +95,11 @@ def collect_report(dialog_dir, peer_id):
                 entry["message_text"] = owner.get("text", "")
                 entry["context"] = [dict(cid=m["conversation_message_id"], date=m.get("date"), from_id=m.get("from_id"), text=m.get("text", ""), target=i == position)
                                     for i, m in enumerate(messages[max(0, position-20):position+21], max(0, position-20))]
+            reasons.update(entry["reasons"])
             entries.append(entry)
     return dict(peer_id=peer_id, generated_at=datetime.now().astimezone().isoformat(),
                 summary=[dict(attachment_type=k[0], state=k[1], count=v) for k, v in sorted(summary.items())],
-                entries=entries, issues=issues,
+                entries=entries, issues=issues, reason_summary=dict(reasons),
                 note="Состояние основано на последних событиях журналов. Фактическое наличие файлов на диске пока не проверяется. Нет события — результат неизвестен. Порядок вложений исходного JSON должен совпадать с порядком при генерации.")
 
 
@@ -113,11 +114,17 @@ def render_report(report):
     from html import escape
     def e(value):
         return escape(str(value if value is not None else "—"), quote=True)
+    def date_label(value):
+        try:
+            return e(datetime.fromtimestamp(value).astimezone().isoformat(sep=" ", timespec="seconds"))
+        except (TypeError, ValueError, OverflowError, OSError):
+            return e(value)
     def label(value):
         return e(LABELS.get(value, value))
     rows = []
     for entry in report["summary"]:
         rows.append(f"<tr><td>{e(entry['attachment_type'])}</td><td>{label(entry['state'])}</td><td>{entry['count']}</td></tr>")
+    reason_rows = "".join(f"<li>{label(reason)}: {count}</li>" for reason, count in report.get("reason_summary", {}).items())
     cards = []
     for entry in report["entries"]:
         if not entry["reasons"]:
@@ -125,11 +132,11 @@ def render_report(report):
         context = []
         for message in entry["context"]:
             css = " class='target'" if message["target"] else ""
-            context.append(f"<li{css}><b>CID {message['cid']} · автор {e(message['from_id'])} · дата {e(message['date'])}</b><pre>{e(message['text'])}</pre></li>")
+            context.append(f"<li{css}><b>CID {message['cid']} · автор {e(message['from_id'])} · дата {date_label(message['date'])}</b><pre>{e(message['text'])}</pre></li>")
         downloads = "; ".join(e(k) + ": " + label(v) for k, v in entry["downloads"].items())
         cards.append(f"<article><h2>CID {entry['root_cid']} · {e(entry['attachment_type'])}</h2>"
                      f"<p><code>{e(entry['item_path'])}</code></p><p>{', '.join(label(r) for r in entry['reasons'])}</p>"
-                     f"<p>Автор: {e(entry['from_id'])}; дата: {e(entry['date'])}; CID вложенного сообщения: {e(entry['message_cid'])}</p>"
+                     f"<p>Автор: {e(entry['from_id'])}; дата: {date_label(entry['date'])}; CID вложенного сообщения: {e(entry['message_cid'])}</p>"
                      f"<p>{downloads}</p><pre>{e(entry.get('message_text', ''))}</pre>"
                      f"<details><summary>Контекст: до 20 сообщений до и после</summary><ol>{''.join(context)}</ol></details></article>")
     warnings = "".join("<li>" + e(issue) + "</li>" for issue in report["issues"])
@@ -142,7 +149,7 @@ def render_report(report):
             f"<h1>Отчёт о вложениях · диалог {report['peer_id']}</h1><p>{e(report['generated_at'])}</p>"
             f"<p>{e(report['note'])}</p><p>Отчёт содержит личную переписку. Не публикуйте его вместе с кодом.</p>"
             f"<table><tr><th>Тип</th><th>Состояние</th><th>Количество</th></tr>{''.join(rows)}</table>"
-            f"<ul>{warnings}</ul>" + ("".join(cards) if cards else "<p>По доступным данным проблемных вложений не найдено.</p>") + "</html>")
+            f"<h2>Причины</h2><ul>{reason_rows}</ul><ul>{warnings}</ul>" + ("".join(cards) if cards else "<p>По доступным данным проблемных вложений не найдено.</p>") + "</html>")
 
 
 def save_report(dialog_dir, peer_id):
