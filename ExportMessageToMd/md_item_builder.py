@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from MdItem import (
-    BaseAttachmentItem, MdItem,
+    BaseAttachmentItem, MdItem, ManualAttachment,
     PhotoAttachment, VideoAttachment, LinkAttachment,
     DocAttachment, AudioAttachment, StickerAttachment, WallAttachment,
     ArticleAttachment,
@@ -130,6 +130,15 @@ def _make_item(
 
 
 def _resolve_attachment(att, cid_raw_dir, cid_large_dir, md_dir, url_to_relpath, authors, config, logger):
+    from manual_media import lookup
+    md_path = Path(md_dir).resolve()
+    md_root = next((p for p in (md_path, *md_path.parents) if p.name == "MdFiles"), None)
+    context = getattr(logger, "context", {})
+    if md_root and "root_cid" in context and "item_path" in context:
+        restored = lookup(md_root.parent, context["root_cid"], context["item_path"], att)
+        if restored and restored["state"] == "manual_restored":
+            logger.LogEvent("attachment_finished", attachment_type=att.get("type", "unknown"), status="manual_restored", downloads={})
+            return ManualAttachment(path_rel(str(restored["file"]), md_dir), att.get(att.get("type"), {}).get("text", ""))
     attachment_type = att.get("type", "unknown")
     logger.LogEvent("attachment_started", attachment_type=attachment_type)
     try:

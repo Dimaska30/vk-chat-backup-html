@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from MdItem import (
-    MdItem,
+    MdItem, ManualAttachment,
     PhotoAttachment, VideoAttachment, LinkAttachment,
     DocAttachment, AudioAttachment, StickerAttachment, WallAttachment,
     ArticleAttachment,
@@ -187,7 +187,9 @@ def _append_sources_table(lines: list, item: MdItem) -> None:
             _walk(reply_item)
 
     def _walk_attachment(att):
-        if isinstance(att, PhotoAttachment):
+        if isinstance(att, ManualAttachment):
+            _add_row(f"| Добавлено вручную | [{att.local_path}]({att.local_path}) | |")
+        elif isinstance(att, PhotoAttachment):
             _add_row(f"| Фото | {_rel_cell(att.download_result)} | {_url_cell(att.original_url)} |")
         elif isinstance(att, VideoAttachment):
             if att.player_url:
@@ -231,6 +233,10 @@ def _append_sources_table(lines: list, item: MdItem) -> None:
 
 
 def _render_attachment(att):
+    if isinstance(att, ManualAttachment):
+        from manual_media import render_media
+        from html import escape
+        return ["**Добавлено вручную:**", render_media(att.local_path), escape(att.caption).replace("\n", "<br>\n")]
     if isinstance(att, PhotoAttachment):
         return _render_photo(att)
     if isinstance(att, VideoAttachment):
