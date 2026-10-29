@@ -82,7 +82,29 @@ class MediaReportTests(unittest.TestCase):
                 self.assertEqual(client.get("/dialog/1/media-report").status_code, 405)
                 self.assertFalse((root / "Reports").exists())
                 response = client.post("/dialog/1/media-report")
-                self.assertEqual(response.status_code, 302)
+                self.assertEqual(response.status_code, 200)
+                body = response.get_data(as_text=True)
+                self.assertIn("Чтение исходных сообщений", body)
+                import re
+                location = re.search(r'<a href="([^"]+)">Открыть отчёт', body).group(1)
                 self.assertEqual(len(list((root / "Reports").glob("*/missing-media.html"))), 1)
-                with client.get(response.location) as page:
+                with client.get(location) as page:
                     self.assertEqual(page.status_code, 200)
+
+
+    def test_large_report_is_paginated(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            originals = root / "OriginalMessages"
+            originals.mkdir()
+            message = dict(conversation_message_id=1, date=1700000000, text="Synthetic",
+                           attachments=[{"type": "photo"} for _ in range(121)])
+            (originals / "1.json").write_text(json.dumps(message), encoding="utf-8")
+            progress = []
+            path = save_report(root, 1, progress.append)
+            pages = list(path.parent.glob("*.html"))
+            self.assertEqual(len(pages), 3)
+            self.assertEqual(sum(p.read_text(encoding="utf-8").count("<article>") for p in pages), 121)
+            self.assertLessEqual(path.read_text(encoding="utf-8").count("<article>"), 50)
+            self.assertIn('href="page-2.html"', path.read_text(encoding="utf-8"))
+            self.assertTrue(any("страница 3 из 3" in line for line in progress))
