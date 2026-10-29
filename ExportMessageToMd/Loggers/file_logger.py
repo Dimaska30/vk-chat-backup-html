@@ -24,6 +24,10 @@ class FileLogger(BaseLogger):
 
     def LogEvent(self, event, **details):
         self.counts[event] += 1
+        if event == "attachment_finished":
+            self.counts["attachment_status:" + details["status"]] += 1
+            for outcome in details.get("downloads", {}).values():
+                self.counts["download_status:" + outcome] += 1
         record = dict(timestamp=datetime.now().astimezone().isoformat(), peer_id=self.peer_id,
                       **self.context, event=event, details=details)
         # Open/close on each event: completed records survive generator cancellation.
