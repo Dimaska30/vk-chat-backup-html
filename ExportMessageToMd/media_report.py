@@ -47,6 +47,7 @@ def collect_report(dialog_dir, peer_id, progress=None):
     messages.sort(key=lambda m: (m.get("date") or 0, m["conversation_message_id"]))
     progress(f"Прочитано сообщений: {len(messages)}. Проверка журналов…")
     latest = {}
+    started_messages = set()
     for file in sorted((dialog_dir / "Logs").glob("*/events.jsonl")):
         try:
             lines = file.read_text(encoding="utf-8").splitlines()
@@ -57,19 +58,34 @@ def collect_report(dialog_dir, peer_id, progress=None):
             try:
                 record = json.loads(line)
                 details = record.get("details", {})
+                if record.get("peer_id") == peer_id and record.get("event") in ("message_started", "markdown_written"):
+                    started_messages.add(record.get("cid"))
                 if record.get("peer_id") != peer_id or record.get("event") not in ("attachment_started", "attachment_finished", "attachment_failed"):
                     continue
                 key = (details["root_cid"], details["item_path"])
+                started_messages.add(details["root_cid"])
                 timestamp = datetime.fromisoformat(record["timestamp"]).timestamp()
                 if key not in latest or timestamp >= latest[key][0]:
                     latest[key] = (timestamp, record)
             except (ValueError, TypeError, KeyError, AttributeError):
                 issues.append(f"Пропущена повреждённая запись журнала {file.parent.name}:{line_number}")
     progress("Сопоставление вложений…")
+    # Legacy archives may have Markdown but no structured journal. Treat them as
+    # previously processed, without claiming that their attachments downloaded.
+    import re
+    for file in (dialog_dir / "MdFiles").rglob("*.md"):
+        match = re.search(r"(?:^|\.Id)(\d+)(?:_part_\d+)?\.md$", file.name)
+        if match:
+            started_messages.add(int(match.group(1)))
+    unprocessed_messages = sum(m["conversation_message_id"] not in started_messages for m in messages)
+    unprocessed_attachments = 0
     entries, summary, reasons = [], Counter(), Counter()
     for position, root in enumerate(messages):
         if position % 100 == 0:
             progress(f"Проверено сообщений: {position} из {len(messages)}")
+        if root["conversation_message_id"] not in started_messages:
+            unprocessed_attachments += sum(1 for _ in walk_attachments(root))
+            continue
         for path, attachment, owner in walk_attachments(root):
             cid = root["conversation_message_id"]
             kind = attachment.get("type", "unknown")
@@ -108,6 +124,7 @@ def collect_report(dialog_dir, peer_id, progress=None):
     return dict(peer_id=peer_id, generated_at=datetime.now().astimezone().isoformat(),
                 summary=[dict(attachment_type=k[0], state=k[1], count=v) for k, v in sorted(summary.items())],
                 entries=entries, issues=issues, reason_summary=dict(reasons),
+                unprocessed_messages=unprocessed_messages, unprocessed_attachments=unprocessed_attachments,
                 note="Состояние основано на последних событиях журналов. Фактическое наличие файлов на диске пока не проверяется. Нет события — результат неизвестен. Порядок вложений исходного JSON должен совпадать с порядком при генерации.")
 
 
@@ -155,6 +172,7 @@ def render_report(report):
             "article{background:white;padding:20px;margin:16px 0;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}"
             "td,th{border:1px solid #ccc;padding:8px}.target{background:#fff0b5}li{padding:8px}code{overflow-wrap:anywhere}</style>"
             f"<h1>Отчёт о вложениях · диалог {report['peer_id']}</h1><p>{e(report['generated_at'])}</p>"
+            f"<p>Ещё не обрабатывались: сообщений {report.get('unprocessed_messages', 0)}, вложений {report.get('unprocessed_attachments', 0)}. Они не включены в карточки проблем.</p>"
             f"<p>{e(report['note'])}</p><p>Отчёт содержит личную переписку. Не публикуйте его вместе с кодом.</p>"
             f"<table><tr><th>Тип</th><th>Состояние</th><th>Количество</th></tr>{''.join(rows)}</table>"
             f"<h2>Причины</h2><ul>{reason_rows}</ul><ul>{warnings}</ul>" + ("".join(cards) if cards else "<p>По доступным данным проблемных вложений не найдено.</p>") + "</html>")
