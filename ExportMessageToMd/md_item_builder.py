@@ -82,19 +82,7 @@ def build_md_items(
         )
         item.heading = _compute_heading(text, cid)
 
-        if len(walls) == 1 and not text:
-            wall_text = _get_wall_text(walls[0])
-            item.filename = _compute_filename(
-                text, resolved_attachments, json_stem, cid,
-                md_dir_abs_len, extra_suffix_len=8 if wall_text else 0,
-                text_override=wall_text, logger=logger,
-            )
-            if wall_text:
-                item.filename = f"Статья.{item.filename}"
-        else:
-            item.filename = _compute_filename(
-                text, resolved_attachments, json_stem, cid, md_dir_abs_len, logger=logger,
-            )
+        item.filename = f"{cid}.md"
 
         return [item]
 
@@ -107,15 +95,7 @@ def build_md_items(
             reply=resolved_reply,
         )
         item.heading = _compute_heading(text, cid)
-        item.filename = _compute_filename(
-            text, others + [wall], json_stem, cid, md_dir_abs_len,
-            extra_suffix_len=len(f"_part_{i}") + (8 if wall_text else 0),
-            text_override=wall_text, logger=logger,
-        )
-        base = item.filename[:-3]
-        item.filename = f"{base}_part_{i}.md"
-        if wall_text:
-            item.filename = f"Статья.{item.filename}"
+        item.filename = f"{cid}_part_{i}.md"
         item.is_wall_split = True
         result.append(item)
 

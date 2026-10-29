@@ -20,7 +20,7 @@ from Loggers.buffer_logger import BufferLogger
 from Loggers.aggregation_logger import AggregationLogger
 from main import main as run_pipeline
 
-CID_PATTERN = re.compile(r"\.Id(\d+)(?:_part_\d+)?\.md$")
+CID_PATTERN = re.compile(r"(?:^|\.Id)(\d+)(?:_part_\d+)?\.md$")
 
 def _template_folder() -> str:
     if getattr(sys, "frozen", False):
@@ -740,6 +740,8 @@ def rename_md_file(peer_id: int, cid: int):
         if not m:
             continue
         suffix = m.group(0)
+        if not suffix.startswith(".Id"):
+            suffix = ".Id" + suffix
         new_filename = f"{new_name}{suffix}"
         if len(new_filename) > _max_filename_len(md_dir):
             return jsonify({"success": False, "error": f"Filename too long (max {_max_filename_len(md_dir) - len(suffix)} chars for name)"}), 400
