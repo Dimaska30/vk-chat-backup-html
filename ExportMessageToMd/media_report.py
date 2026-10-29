@@ -32,6 +32,7 @@ def walk_wall(wall, path):
 def collect_report(dialog_dir, peer_id, progress=None):
     progress = progress or (lambda message: None)
     progress("Чтение исходных сообщений…")
+    from manual_media import lookup, fingerprint, MEDIA_TYPES
     dialog_dir = Path(dialog_dir)
     messages, issues = [], []
     for file in sorted((dialog_dir / "OriginalMessages").glob("*.json")):
@@ -91,6 +92,7 @@ def collect_report(dialog_dir, peer_id, progress=None):
             kind = attachment.get("type", "unknown")
             entry = dict(peer_id=peer_id, root_cid=cid, item_path=path, attachment_type=kind,
                          message_cid=owner.get("conversation_message_id"), date=owner.get("date", root.get("date")),
+                         fingerprint=fingerprint(attachment), manual_supported=kind in MEDIA_TYPES,
                          from_id=owner.get("from_id", owner.get("owner_id")), reasons=[], downloads={})
             saved = latest.get((cid, path))
             if saved is None:
@@ -114,6 +116,10 @@ def collect_report(dialog_dir, peer_id, progress=None):
                     if not entry["reasons"]:
                         entry["state"] = "downloaded" if entry["downloads"] else "processed"
             entry["state"] = entry.get("state", "needs_attention")
+            restored = lookup(dialog_dir, cid, path, attachment)
+            if restored:
+                entry["state"] = restored["state"]
+                entry["reasons"] = [] if restored["state"] == "manual_restored" else [restored["state"]]
             summary[(kind, entry["state"])] += 1
             if entry["reasons"]:
                 entry["message_text"] = owner.get("text", "")
@@ -142,7 +148,7 @@ def collect_report(dialog_dir, peer_id, progress=None):
                 note="Состояние основано на последних событиях журналов. Фактическое наличие файлов на диске пока не проверяется. Нет события — результат неизвестен. Порядок вложений исходного JSON должен совпадать с порядком при генерации.")
 
 
-LABELS = {"downloaded": "Скачано по журналу", "processed": "Обработано без скачивания",
+LABELS = {"manual_restored": "Восстановлено вручную", "manual_file_missing": "Ручной файл отсутствует", "source_changed": "Исходное вложение изменилось", "downloaded": "Скачано по журналу", "processed": "Обработано без скачивания",
           "needs_attention": "Требует внимания", "unknown": "Нет достоверных данных",
           "interrupted": "Обработка прервана", "error": "Ошибка обработки или скачивания",
           "no_url": "Нет доступной ссылки", "disabled_by_settings": "Отключено настройками",
@@ -174,16 +180,23 @@ def render_report(report):
         for index in group["entry_indices"]:
             entry = report["entries"][index]
             downloads = "; ".join(e(k) + ": " + label(v) for k, v in entry["downloads"].items())
+            form = ""
+            if entry.get("manual_supported"):
+                form = (f'<form action="/dialog/{report["peer_id"]}/manual-media" method="post" enctype="multipart/form-data" target="_blank">'
+                        f'<input type="hidden" name="cid" value="{entry["root_cid"]}">'
+                        f'<input type="hidden" name="item_path" value="{e(entry["item_path"])}">'
+                        f'<input type="hidden" name="fingerprint" value="{e(entry["fingerprint"])}">'
+                        '<input type="file" name="file" required><button type="submit">Прикрепить файл</button></form>')
             attachments.append(f"<section><h3>CID {entry['root_cid']} · {e(entry['attachment_type'])}</h3>"
                                f"<p><code>{e(entry['item_path'])}</code></p><p>{', '.join(label(r) for r in entry['reasons'])}</p>"
                                f"<p>Автор: {e(entry['from_id'])}; дата: {date_label(entry['date'])}; CID вложенного сообщения: {e(entry['message_cid'])}</p>"
-                               f"<p>{downloads}</p><pre>{e(entry.get('message_text', ''))}</pre></section>")
+                               f"<p>{downloads}</p><pre>{e(entry.get('message_text', ''))}</pre>{form}</section>")
         cards.append(f"<article><h2>Группа: {len(group['entry_indices'])} проблемных вложений</h2>{''.join(attachments)}"
                      f"<details><summary>Общий контекст: до 20 сообщений до и после группы</summary><ol>{''.join(context)}</ol></details></article>")
     warnings = "".join("<li>" + e(issue) + "</li>" for issue in report["issues"])
     return ("<!doctype html><html lang='ru'><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-            "<meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; style-src 'unsafe-inline'\">"
+            "<meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'\">"
             "<title>Отчёт о вложениях</title><style>body{font:16px system-ui;max-width:1050px;margin:30px auto;padding:16px;background:#f5f5f5}"
             "article{background:white;padding:20px;margin:16px 0;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}"
             "td,th{border:1px solid #ccc;padding:8px}.target{background:#fff0b5}li{padding:8px}code{overflow-wrap:anywhere}</style>"

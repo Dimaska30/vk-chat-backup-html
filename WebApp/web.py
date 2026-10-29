@@ -103,7 +103,7 @@ def _rewrite_md_links(md_text: str, md_file_abs: Path) -> str:
     return md_text
 
 
-_KNOWN_DIRS = ("RawData/", "LargeRawData/", "OriginalMessages/", "AutorImages/")
+_KNOWN_DIRS = ("RawData/", "LargeRawData/", "OriginalMessages/", "AutorImages/", "ManualMedia/")
 
 
 def _rewrite_links_for_move(content: str, depth_diff: int) -> str:
@@ -1055,3 +1055,36 @@ def create_media_report(peer_id):
                 return
 
     return Response(stream_with_context(generate()), mimetype="text/html", headers={"X-Accel-Buffering": "no", "Cache-Control": "no-store"})
+
+
+@app.route("/dialog/<int:peer_id>/manual-media", methods=["POST"])
+def attach_manual_media(peer_id):
+    from media_report import walk_attachments
+    from manual_media import store, update_markdown, fingerprint
+    try:
+        cid = int(request.form.get("cid", ""))
+    except ValueError:
+        return "Некорректный CID", 400
+    item_path = request.form.get("item_path", "")
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return "Выберите файл", 400
+    dialog_dir = _get_dialog_dir(peer_id)
+    sources = list((dialog_dir / "OriginalMessages").glob(f"*_{cid}.json"))
+    if len(sources) != 1:
+        return "Исходное сообщение не найдено или неоднозначно", 404
+    root = _json.loads(sources[0].read_text(encoding="utf-8"))
+    if root.get("conversation_message_id") != cid:
+        return "CID исходного сообщения не совпадает", 409
+    attachment = next((att for path, att, _ in walk_attachments(root) if path == item_path), None)
+    if attachment is None:
+        return "Вложение не найдено", 404
+    if request.form.get("fingerprint") != fingerprint(attachment):
+        return "Исходное вложение изменилось. Сформируйте новый отчёт.", 409
+    try:
+        file = store(dialog_dir, cid, item_path, attachment, upload.filename, upload.stream)
+    except ValueError as exc:
+        return str(exc), 400
+    updated = update_markdown(dialog_dir, cid, item_path, file)
+    message = "Файл сохранён. Markdown обновлён." if updated else "Файл сохранён. Он появится при следующей генерации Markdown."
+    return f"<!doctype html><meta charset='utf-8'><p>{message}</p><p>Сформируйте новый отчёт, чтобы обновить состояния вложений.</p>"
