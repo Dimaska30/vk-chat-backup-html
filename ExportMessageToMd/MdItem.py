@@ -113,3 +113,4 @@ class MdItem:
 @dataclass
 class ManualAttachment(BaseAttachmentItem):
     local_path: str
+    caption: str = ""

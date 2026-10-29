@@ -235,7 +235,8 @@ def _append_sources_table(lines: list, item: MdItem) -> None:
 def _render_attachment(att):
     if isinstance(att, ManualAttachment):
         from manual_media import render_media
-        return ["**Добавлено вручную:**", render_media(att.local_path)]
+        from html import escape
+        return ["**Добавлено вручную:**", render_media(att.local_path), escape(att.caption).replace("\n", "<br>\n")]
     if isinstance(att, PhotoAttachment):
         return _render_photo(att)
     if isinstance(att, VideoAttachment):
