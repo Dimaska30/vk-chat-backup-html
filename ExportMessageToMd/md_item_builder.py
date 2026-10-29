@@ -16,6 +16,7 @@ from download_media import download_file
 from vk_client import get_video_embed_urls
 from config import Config
 from Loggers.base_logger import BaseLogger
+from Loggers.context_logger import ContextLogger
 from config_loader import path_rel
 
 
@@ -32,6 +33,8 @@ def build_md_items(
     url_to_relpath: Dict[str, str],
     logger: BaseLogger,
 ) -> List[MdItem]:
+    if not isinstance(logger, ContextLogger):
+        logger = ContextLogger(logger, root_cid=root_cid, message_cid=cid, item_path="")
     if cid == root_cid:
         cid_raw_dir = str(Path(little_raw_data_dir) / str(cid))
         cid_large_dir = str(Path(large_raw_data_dir) / str(cid))
@@ -46,18 +49,18 @@ def build_md_items(
 
     raw_attachments = fwd.get("attachments", [])
     resolved_attachments = [
-        _resolve_attachment(a, cid_raw_dir, cid_large_dir, md_dir, url_to_relpath, authors, config, logger)
-        for a in raw_attachments
+        _resolve_attachment(a, cid_raw_dir, cid_large_dir, md_dir, url_to_relpath, authors, config, logger.child(f"attachments[{index}]", attachment_index=index + 1))
+        for index, a in enumerate(raw_attachments)
     ]
 
     resolved_forwarded = []
-    for fwd_message in fwd.get("fwd_messages", []):
+    for fwd_index, fwd_message in enumerate(fwd.get("fwd_messages", [])):
         fwd_cid = fwd_message.get("conversation_message_id")
         if fwd_cid is None:
             logger.LogWarning(f"Пересланное сообщение без conversation_message_id, пропущено")
             continue
         resolved_forwarded.extend(
-            build_md_items(fwd_message, fwd_cid, root_cid, json_filename, md_dir, little_raw_data_dir, large_raw_data_dir, authors, config, url_to_relpath, logger)
+            build_md_items(fwd_message, fwd_cid, root_cid, json_filename, md_dir, little_raw_data_dir, large_raw_data_dir, authors, config, url_to_relpath, logger.child(f"fwd_messages[{fwd_index}]", message_cid=fwd_cid))
         )
 
     resolved_reply = []
@@ -67,7 +70,7 @@ def build_md_items(
         if reply_cid is None:
             logger.LogWarning("Ответ на сообщение без conversation_message_id, пропущен")
         else:
-            resolved_reply = build_md_items(reply_msg, reply_cid, root_cid, json_filename, md_dir, little_raw_data_dir, large_raw_data_dir, authors, config, url_to_relpath, logger)
+            resolved_reply = build_md_items(reply_msg, reply_cid, root_cid, json_filename, md_dir, little_raw_data_dir, large_raw_data_dir, authors, config, url_to_relpath, logger.child("reply_message", message_cid=reply_cid))
 
     walls = [a for a in resolved_attachments if isinstance(a, WallAttachment)]
     others = [a for a in resolved_attachments if not isinstance(a, WallAttachment)]
@@ -128,7 +131,6 @@ def _make_item(
 
 def _resolve_attachment(att, cid_raw_dir, cid_large_dir, md_dir, url_to_relpath, authors, config, logger):
     attachment_type = att.get("type", "unknown")
-    logger.LogEvent("attachment_location", message_path=str(Path(cid_raw_dir).relative_to(Path(cid_raw_dir).parents[1])) if len(Path(cid_raw_dir).parents) > 1 else Path(cid_raw_dir).name)
     logger.LogEvent("attachment_started", attachment_type=attachment_type)
     try:
         result = _resolve_attachment_impl(att, cid_raw_dir, cid_large_dir, md_dir,
@@ -183,7 +185,7 @@ def _resolve_attachment_impl(
     if t == "link":
         return _resolve_link(att.get("link", {}))
     if t in ("wall", "post"):
-        return _resolve_wall(att.get(t, {}), cid_raw_dir, cid_large_dir, md_dir, url_to_relpath, authors, config, logger)
+        return _resolve_wall(att.get(t, {}), cid_raw_dir, cid_large_dir, md_dir, url_to_relpath, authors, config, logger.child(t))
     if t == "doc":
         return _resolve_doc(att.get("doc", {}), cid_raw_dir, md_dir, url_to_relpath, logger)
     if t == "audio":
@@ -357,14 +359,14 @@ def _resolve_wall(
     logger: BaseLogger,
 ) -> WallAttachment:
     original_walls = [
-        _resolve_wall(ch, cid_raw_dir, cid_large_dir, md_dir, url_to_relpath, authors, config, logger)
-        for ch in data.get("copy_history", [])
+        _resolve_wall(ch, cid_raw_dir, cid_large_dir, md_dir, url_to_relpath, authors, config, logger.child(f"copy_history[{index}]"))
+        for index, ch in enumerate(data.get("copy_history", []))
     ]
 
     owner_id = data.get("owner_id")
     children = [
-        _resolve_attachment(a, cid_raw_dir, cid_large_dir, md_dir, url_to_relpath, authors, config, logger)
-        for a in data.get("attachments", [])
+        _resolve_attachment(a, cid_raw_dir, cid_large_dir, md_dir, url_to_relpath, authors, config, logger.child(f"attachments[{index}]", attachment_index=index + 1))
+        for index, a in enumerate(data.get("attachments", []))
     ]
     author = authors.get(owner_id) if owner_id is not None else None
     return WallAttachment(
