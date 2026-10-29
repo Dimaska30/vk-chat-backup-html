@@ -105,12 +105,12 @@ def main(config: Config, peer_ids: Optional[set[int]], logger: BaseLogger):
         count = 0
         message_files = sorted(Path(original_messages_dir).glob("*.json"))
 
-        existing_md_by_cid: dict[int, str] = {}
+        existing_md_by_cid: dict[int, list[Path]] = {}
         if md_dir.is_dir():
-            for md_file in md_dir.rglob("*.Id*.md"):
-                m = re.search(r'\.Id(\d+)\.md$', md_file.name)
+            for md_file in md_dir.rglob("*.md"):
+                m = re.search(r'(?:^|\.Id)(\d+)(?:_part_\d+)?\.md$', md_file.name)
                 if m:
-                    existing_md_by_cid[int(m.group(1))] = str(md_file.relative_to(md_dir))
+                    existing_md_by_cid.setdefault(int(m.group(1)), []).append(md_file)
 
         for message_index, message_file in enumerate(message_files):
             with open(message_file, encoding="utf-8") as fp:
@@ -125,7 +125,8 @@ def main(config: Config, peer_ids: Optional[set[int]], logger: BaseLogger):
                 if not config.overwrite_existing_md:
                     yield f"  Уже существует ({message_index + 1}/{len(message_files)} id={cid}): \"{existing_md_by_cid[cid]}\""
                     continue
-                (md_dir / existing_md_by_cid[cid]).unlink(missing_ok=True)
+                for existing_file in existing_md_by_cid[cid]:
+                    existing_file.unlink(missing_ok=True)
                 is_overwrite = True
             shutil.rmtree(little_raw_data_dir / str(cid), ignore_errors=True)
             shutil.rmtree(large_raw_data_dir / str(cid), ignore_errors=True)

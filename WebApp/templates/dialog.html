@@ -584,8 +584,8 @@ function renameSelected() {
   }
   let currentText = filenameEl.textContent.trim();
   const fullName = currentText;
-  const suffixLen = currentText.length - currentText.replace(/\.Id\d+(?:_part_\d+)?\.md$/, '').length;
-  currentText = currentText.replace(/\.Id\d+(?:_part_\d+)?\.md$/, '');
+  const suffixLen = currentText.length - currentText.replace(/(?:^|\.Id)\d+(?:_part_\d+)?\.md$/, '').length;
+  currentText = currentText.replace(/(?:^|\.Id)\d+(?:_part_\d+)?\.md$/, '');
 
   fetch(`/dialog/${selectedPeer}/limits/${selectedCid}`)
     .then(r => r.json())
