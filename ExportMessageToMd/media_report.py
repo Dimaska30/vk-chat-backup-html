@@ -1,0 +1,102 @@
+"""Explicit, local-only audit. Never runs while listing dialogs or exporting messages."""
+import json
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+
+
+def walk_attachments(message, path=""):
+    for index, attachment in enumerate(message.get("attachments", [])):
+        location = f"{path}attachments[{index}]"
+        yield location, attachment, message
+        kind = attachment.get("type")
+        if kind in ("wall", "post"):
+            yield from walk_wall(attachment.get(kind, {}), location + "." + kind + ".")
+    for index, child in enumerate(message.get("fwd_messages", [])):
+        yield from walk_attachments(child, f"{path}fwd_messages[{index}].")
+    if message.get("reply_message"):
+        yield from walk_attachments(message["reply_message"], path + "reply_message.")
+
+
+def walk_wall(wall, path):
+    for index, attachment in enumerate(wall.get("attachments", [])):
+        location = f"{path}attachments[{index}]"
+        yield location, attachment, wall
+        kind = attachment.get("type")
+        if kind in ("wall", "post"):
+            yield from walk_wall(attachment.get(kind, {}), location + "." + kind + ".")
+    for index, child in enumerate(wall.get("copy_history", [])):
+        yield from walk_wall(child, f"{path}copy_history[{index}].")
+
+
+def collect_report(dialog_dir, peer_id):
+    dialog_dir = Path(dialog_dir)
+    messages, issues = [], []
+    for file in sorted((dialog_dir / "OriginalMessages").glob("*.json")):
+        try:
+            item = json.loads(file.read_text(encoding="utf-8"))
+            if not isinstance(item, dict) or not isinstance(item.get("conversation_message_id"), int):
+                raise ValueError("Invalid message")
+            messages.append(item)
+        except (ValueError, OSError):
+            issues.append("Не удалось прочитать исходное сообщение: " + file.name)
+    messages.sort(key=lambda m: (m.get("date") or 0, m["conversation_message_id"]))
+    latest = {}
+    for file in sorted((dialog_dir / "Logs").glob("*/events.jsonl")):
+        try:
+            lines = file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            issues.append("Не удалось прочитать журнал: " + file.parent.name)
+            continue
+        for line_number, line in enumerate(lines, 1):
+            try:
+                record = json.loads(line)
+                details = record.get("details", {})
+                if record.get("peer_id") != peer_id or record.get("event") not in ("attachment_started", "attachment_finished", "attachment_failed"):
+                    continue
+                key = (details["root_cid"], details["item_path"])
+                timestamp = datetime.fromisoformat(record["timestamp"]).timestamp()
+                if key not in latest or timestamp >= latest[key][0]:
+                    latest[key] = (timestamp, record)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                issues.append(f"Пропущена повреждённая запись журнала {file.parent.name}:{line_number}")
+    entries, summary = [], Counter()
+    for position, root in enumerate(messages):
+        for path, attachment, owner in walk_attachments(root):
+            cid = root["conversation_message_id"]
+            kind = attachment.get("type", "unknown")
+            entry = dict(peer_id=peer_id, root_cid=cid, item_path=path, attachment_type=kind,
+                         message_cid=owner.get("conversation_message_id"), date=owner.get("date", root.get("date")),
+                         from_id=owner.get("from_id", owner.get("owner_id")), reasons=[], downloads={})
+            saved = latest.get((cid, path))
+            if saved is None:
+                entry["reasons"] = ["unknown"]
+            else:
+                record = saved[1]
+                details = record["details"]
+                entry["last_event"] = record["timestamp"]
+                if details.get("attachment_type") != kind:
+                    entry["reasons"] = ["unknown"]
+                elif record["event"] == "attachment_started":
+                    entry["reasons"] = ["interrupted"]
+                elif record["event"] == "attachment_failed":
+                    entry["reasons"] = ["error"]
+                else:
+                    entry["downloads"] = details.get("downloads", {})
+                    entry["reasons"] = sorted({v for v in entry["downloads"].values() if v != "downloaded"})
+                    status = details.get("status")
+                    if status in ("unsupported", "metadata_only", "error"):
+                        entry["reasons"] = sorted(set(entry["reasons"] + [status]))
+                    if not entry["reasons"]:
+                        entry["state"] = "downloaded" if entry["downloads"] else "processed"
+            entry["state"] = entry.get("state", "needs_attention")
+            summary[(kind, entry["state"])] += 1
+            if entry["reasons"]:
+                entry["message_text"] = owner.get("text", "")
+                entry["context"] = [dict(cid=m["conversation_message_id"], date=m.get("date"), from_id=m.get("from_id"), text=m.get("text", ""), target=i == position)
+                                    for i, m in enumerate(messages[max(0, position-20):position+21], max(0, position-20))]
+            entries.append(entry)
+    return dict(peer_id=peer_id, generated_at=datetime.now().astimezone().isoformat(),
+                summary=[dict(attachment_type=k[0], state=k[1], count=v) for k, v in sorted(summary.items())],
+                entries=entries, issues=issues,
+                note="Состояние основано на последних событиях журналов. Фактическое наличие файлов на диске пока не проверяется. Нет события — результат неизвестен. Порядок вложений исходного JSON должен совпадать с порядком при генерации.")
