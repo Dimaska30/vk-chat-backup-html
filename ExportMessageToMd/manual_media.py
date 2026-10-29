@@ -26,8 +26,11 @@ def lookup(dialog_dir, cid, path, attachment):
     directory = Path(dialog_dir) / "ManualMedia"
     if not (directory / "index.sqlite3").is_file():
         return None
-    with connect(dialog_dir) as db:
+    db = connect(dialog_dir)
+    try:
         row = db.execute("SELECT fingerprint, filename FROM media WHERE cid=? AND path=?", (cid, path)).fetchone()
+    finally:
+        db.close()
     if not row:
         return None
     if row[0] != fingerprint(attachment):

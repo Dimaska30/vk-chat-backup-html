@@ -108,3 +108,8 @@ class MdItem:
     is_wall_split: bool = False
     author: Optional[AuthorInfo] = None
     reply: Optional[List["MdItem"]] = None
+
+
+@dataclass
+class ManualAttachment(BaseAttachmentItem):
+    local_path: str
